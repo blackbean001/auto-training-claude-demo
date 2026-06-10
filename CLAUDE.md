@@ -1,174 +1,172 @@
-# CLAUDE.md — 轨迹预测 finetune 编排手册
+# CLAUDE.md — Trajectory Prediction Finetune Orchestration Handbook
 
-> 给 Claude Code 的操作手册。**每批决策前依次读三样**：本文件 → `auto_finetune/LESSONS.md`(历史已验证规律, 自动增长) → 上一批各 `runs/<id>/verdict.json`。
+> Operations handbook for Claude Code. **Before each batch decision, read three things in order**: this file → `auto_finetune/LESSONS.md` (historically verified rules, auto-growing) → each `runs/<id>/verdict.json` from the previous batch.
 
-## 0. 目标 (永远围绕这两条)
+## 0. Goals (always revolve around these two)
 
-TCL-G100 stylus 轨迹预测。finetune TF 版 hossom 模型，在**不损失预测长度**的前提下**压住拐角飞线**。
+TCL-G100 stylus trajectory prediction. Finetune the TF version of the hossom model to **suppress corner fly-off** **without losing prediction length**.
 
-- **目标1 保长度**：候选 B 的 `APL`(平均预测长度, mm) 不低于基线 A。
-- **目标2 压飞线**：curve 类(`small_curves`/`big_curves`) 的 `RMSD`/`AAE` 不变差、`good%` 不下降。
+- **Goal 1 — keep length**: Candidate B's `APL` (average prediction length, mm) is not lower than baseline A.
+- **Goal 2 — suppress fly-off**: For curve categories (`small_curves`/`big_curves`), `RMSD`/`AAE` does not get worse and `good%` does not drop.
 
-两条天然冲突(压飞线常缩短预测)。每轮成败 = 两条**同时**满足，`verdict.json` 自动判。
+The two conflict by nature (suppressing fly-off often shortens prediction). Each round succeeds = both satisfied **simultaneously**; `verdict.json` judges automatically.
 
-> **经验库自动增长**：每轮 `analyze.py` 把"改了什么→指标怎么动→候选规律"写进 `runs/<id>/lesson.md`(每轮新 md) 并追加到 `auto_finetune/LESSONS.md`。**决策前先读 `LESSONS.md`**。§4 先验表是初始知识，`LESSONS.md` 是实测增补；冲突时以 `LESSONS.md` 里**单变量、已 ✅ 一致**的实测条目为准。
+> **The lessons library grows automatically**: Each round `analyze.py` writes "what changed → how metrics moved → candidate rule" into `runs/<id>/lesson.md` (a new md per round) and appends to `auto_finetune/LESSONS.md`. **Read `LESSONS.md` before deciding.** The prior table in §4 is initial knowledge; `LESSONS.md` is the measured supplement. On conflict, defer to the **single-variable, ✅-consistent** measured entries in `LESSONS.md`.
 
-## 1. 数据流 (一轮 = 4 步, 由 `run_round.sh` 串好)
+## 1. Data Flow (one round = 4 steps, wired by `run_round.sh`)
 
 ```
-round.json ──emit_env──> TRAJ_* 环境变量 (含 TRAJ_GPU)
+round.json ──emit_env──> TRAJ_* environment variables (incl. TRAJ_GPU)
      │
-     ├─1─ trainer_*.py SAVE_DIR TRAIN_JSON LOG   →  best ckpt (用 descriptor 的 valid_set 选优)
+     ├─1─ trainer_*.py SAVE_DIR TRAIN_JSON LOG   →  best ckpt (selected via descriptor's valid_set)
      ├─2─ export_onnx_buffer.py SAVE_DIR         →  SAVE_DIR/model_hossom.quant.onnx
-     ├─3─ $TRAJ_COMPARER  A vs B                 →  runs/<id>/results.csv (逐类别 + OVERALL)
+     ├─3─ $TRAJ_COMPARER  A vs B                 →  runs/<id>/results.csv (per-category + OVERALL)
      └─4─ analyze.py                             →  verdict.json + ledger.csv + lesson.md + LESSONS.md
 ```
 
-- trainer/export 经 `TRAJ_GPU` 绑定到本轮指定卡；trainer 经 `apply_trainer_env_overrides` 读 `TRAJ_*` 覆盖权重/容差/LR；cnn_gru 经 `flags_from_env` 读 flag。
-- export 读 argv = 本轮 `SAVE_DIR`；compare 用绝对路径 `$TRAJ_COMPARER`(在 `torch_version/`)。
-- analyze 经验回写靠 round.json 的 `from`(parent) 做受控对比 —— **单变量改动**才能干净归因；并发写 ledger/LESSONS 已加 `flock`。
+- trainer/export are bound to this round's assigned GPU via `TRAJ_GPU`; trainer reads `TRAJ_*` via `apply_trainer_env_overrides` to override weights/tolerances/LR; cnn_gru reads flags via `flags_from_env`.
+- export reads argv = this round's `SAVE_DIR`; compare uses the absolute path `$TRAJ_COMPARER` (in `torch_version/`).
+- analyze writes back lessons using round.json's `from` (parent) for a controlled comparison — only **single-variable changes** allow clean attribution; concurrent writes to ledger/LESSONS already use `flock`.
 
-## 2. 动词面
+## 2. Verb Surface
 
-### 2.1 单轮 (调试 / 跑通用)
+### 2.1 Single round (debug / smoke run)
 ```bash
 TRAJ_GPU=0 nohup ./run_round.sh <id> > runs/<id>/round.out 2>&1 &
 tail -f runs/<id>/train.log
 ```
 
-### 2.2 一批并行 (六卡, 日常迭代主力)
+### 2.2 One batch in parallel (six GPUs, the daily iteration workhorse)
 ```bash
-# 决策前: 读历史经验 + 上一批结论
-cat auto_finetune/LESSONS.md                 # 历史已验证规律 (决策第一输入)
-column -t -s, auto_finetune/ledger.csv       # 跨轮趋势
+# Before deciding: read historical lessons + previous batch conclusions
+cat auto_finetune/LESSONS.md                 # historically verified rules (first input to decisions)
+column -t -s, auto_finetune/ledger.csv       # cross-round trends
 
-# 派生这一批 (≤6 个, 单变量, 全部 --from 上一批已完成的最佳轮)
+# Derive this batch (≤6, single-variable, all --from the best completed round of the previous batch)
 python -m auto_finetune.make_round_config --id 0608_tw4 --from 0608_base --notes "tw 3->4" --time-weight 4
 python -m auto_finetune.make_round_config --id 0608_aw15 --from 0608_base --notes "aw 10->15" --angle-weight 15
-# ... 最多六个
+# ... up to six
 
-# 六卡并行 (卡满排队、空了顶上、每卡不超卖)
+# Six-GPU parallel (queue when full, fill in when free, no oversubscription per GPU)
 GPUS="0 1 2 3 4 5" nohup ./run_batch.sh 0608_tw4 0608_aw15 ... > batch_0608.out 2>&1 &
 tail -f batch_0608.out
 
-# 跑完读经验
-cat runs/<id>/lesson.md                      # 单轮: 改了什么→怎么动→规律
-cat auto_finetune/LESSONS.md                 # 累积
+# After it runs, read the lessons
+cat runs/<id>/lesson.md                      # single round: what changed → how it moved → rule
+cat auto_finetune/LESSONS.md                 # cumulative
 ```
 
-- **改超参唯一入口 = `make_round_config`**(只写 round.json, 不碰源码)；它带 `--gpu`、越界校验、`loose≤strict` 校验、记 `from`。
-- 改代码先 smoke：`python smoke_test_graph.py`；接线自检 `TRAJ_ANGLE_WEIGHT=12 python smoke_test_graph.py` 应见 `overridden by env: {'angle_weight': 12.0}`。
+- **The only entry point for changing hyperparameters = `make_round_config`** (writes round.json only, never touches source); it includes `--gpu`, out-of-range validation, `loose≤strict` validation, and records `from`.
+- Smoke-test before changing code: `python smoke_test_graph.py`; wiring self-check `TRAJ_ANGLE_WEIGHT=12 python smoke_test_graph.py` should show `overridden by env: {'angle_weight': 12.0}`.
 
-## 3. 看什么指标 (跨轮只看权重无关的原始量)
+## 3. Which Metrics to Watch (across rounds, only weight-independent raw quantities)
 
-`results.csv` 每数据文件一行(= 一类别) + 一行 OVERALL，列 `A_x / B_x / delta_x`，`delta = B − A`。
+`results.csv` has one row per data file (= one category) + one OVERALL row, with columns `A_x / B_x / delta_x`, where `delta = B − A`.
 
-| 指标 | 含义 | 方向 |
+| Metric | Meaning | Direction |
 |---|---|---|
-| `RMSD` | 距离误差 (mm) | ↓ 好 |
-| `AAE(°)` | 角度误差 (度) | ↓ 好 |
-| `ATE` | 时间误差 mean(1−pred_time) | ↓ 好 |
-| `APL` | 平均预测长度 (mm) ← **目标1** | 不退 |
-| `good%` | 满足精度门的比例 | ↑ 好 |
-| `err` | 合成量 = 加权和 | **跨轮禁用** ↓ |
+| `RMSD` | distance error (mm) | ↓ good |
+| `AAE(°)` | angle error (degrees) | ↓ good |
+| `ATE` | time error mean(1−pred_time) | ↓ good |
+| `APL` | average prediction length (mm) ← **Goal 1** | no regression |
+| `good%` | fraction meeting the accuracy gate | ↑ good |
+| `err` | composite = weighted sum | **forbidden across rounds** ↓ |
 
-核心看：curve 行 `delta_RMSD`/`delta_good%`，OVERALL `delta_APL`。
+Core focus: curve rows' `delta_RMSD`/`delta_good%`, and OVERALL `delta_APL`.
 
-## 4. 旋钮清单 + 取值规则
+## 4. Knob List + Value Rules
 
-### 4.1 可改 / 不可改
-- **可改**: `time_weight`, `angle_weight`, `distance_weight`, `fit_weight`,
-  `dist_tol_loose`, `dist_tol_strict`, `hardness`(谨慎)，
-  flag: `use_apl_loss` / `apl_target` / `use_time_ceil` / `time_ceil` / `tune_time_only` / `tune_poly_only`
-- **冻结**: `lr`, `dim_rnns`, `dim_feature`, **`patience`(固定 50)**
+### 4.1 Changeable / Frozen
+- **Changeable**: `time_weight`, `angle_weight`, `distance_weight`, `fit_weight`,
+  `dist_tol_loose`, `dist_tol_strict`, `hardness` (with caution),
+  flags: `use_apl_loss` / `apl_target` / `use_time_ceil` / `time_ceil` / `tune_time_only` / `tune_poly_only`
+- **Frozen**: `lr`, `dim_rnns`, `dim_feature`, **`patience` (fixed at 50)**
 
-### 4.2 方向性经验 (初始先验; 有 LESSONS.md 实测后以实测为准)
-| 旋钮 | 量级 | 步长 | 方向 |
+### 4.2 Directional priors (initial priors; once LESSONS.md has measurements, defer to those)
+| Knob | Magnitude | Step | Direction |
 |---|---|---|---|
-| `time_weight` | O(1~3) | **±1** | **越大 → APL 越长**(单调, 最可靠的加长杠杆) |
-| `angle_weight` | O(10) | **±5** | 越大 → 拐角越收敛/越不飞, 但可能缩短预测 |
-| `distance_weight` | O(10) | **±5** | 越大 → 整体贴合越紧 |
-| `fit_weight` | O(10) | **±5** | 越大 → 多项式拟合约束越强 |
-| `dist_tol_loose`/`dist_tol_strict` | O(1) | **±0.5** | 收紧 → good% 门更严 |
-| `hardness` | ~99.5 | ±0.5 | 百分位; 谨慎, 必须 <100 |
+| `time_weight` | O(1~3) | **±1** | **larger → longer APL** (monotonic, the most reliable lever for lengthening) |
+| `angle_weight` | O(10) | **±5** | larger → corners more convergent / less fly-off, but may shorten prediction |
+| `distance_weight` | O(10) | **±5** | larger → overall fit tighter |
+| `fit_weight` | O(10) | **±5** | larger → stronger polynomial fitting constraint |
+| `dist_tol_loose`/`dist_tol_strict` | O(1) | **±0.5** | tightening → stricter good% gate |
+| `hardness` | ~99.5 | ±0.5 | percentile; cautious, must be <100 |
 
-一句话: **O(1~3) change by 1, O(10) change by 5, 容差 ±0.5。**
+In one line: **O(1~3) change by 1, O(10) change by 5, tolerances ±0.5.**
 
-### 4.3 取值优先级 (按序, 不跳级)
-1. **APL 不够长 → `time_weight += 1`** (主旋钮, 最可靠的加长手段)
-2. **拐角飞线 → `angle_weight += 5`**
-3. **两个目标同时 FAIL → 先 `time_weight += 1`(保长度优先), 再 `angle_weight += 5`**
-4. 直线被连累 → 数据配比(train json `size_per_batch`); 或 `angle_weight` 回退半档
-5. `delta_ATE` 漂移 → `time_weight`
-6. **最后手段(优先级最低)**: `--apl-target` / `--time-ceil` 带 relu 硬边界、易副作用, 仅当主旋钮(time/angle)推不动时才用。
+### 4.3 Value priority (in order, no skipping)
+1. **APL not long enough → `time_weight += 1`** (primary knob, most reliable lengthening means)
+2. **Corner fly-off → `angle_weight += 5`**
+3. **Both goals FAIL at once → first `time_weight += 1` (length-keeping takes priority), then `angle_weight += 5`**
+4. Straight lines collateral-damaged → data ratio (train json `size_per_batch`); or back off `angle_weight` half a notch
+5. `delta_ATE` drift → `time_weight`
+6. **Last resort (lowest priority)**: `--apl-target` / `--time-ceil` carry relu hard boundaries, prone to side effects; use only when the primary knobs (time/angle) won't budge it.
 
-### 4.4 通用原则
-- **一轮只动一个旋钮**(单变量); 多变量 lesson 会标 `⚠️ 归因不可靠`。
-- `--from <上一批最佳轮>` 克隆, 只覆盖要动的那一个 (parent 也是经验回写做对比的依据)。
-- 按上表步长走; 若 `LESSONS.md` 已有实测斜率(如"每 +1→APL +X"), 用实测斜率估步长。
-- 沿 `ledger.csv` / `LESSONS.md` 爬山: 同方向有效就继续; 过头(目标A好了但B退了)就回退半步二分。
+### 4.4 General principles
+- **Move only one knob per round** (single-variable); multi-variable lessons are tagged `⚠️ attribution unreliable`.
+- `--from <best round of previous batch>` to clone, overriding only the one you intend to move (the parent is also the basis for lesson write-back comparison).
+- Follow the step sizes in the table above; if `LESSONS.md` already has a measured slope (e.g. "each +1 → APL +X"), use the measured slope to estimate the step.
+- Hill-climb along `ledger.csv` / `LESSONS.md`: continue if the same direction works; if overshot (Goal A improved but B regressed), back off half a step and bisect.
 
-## 5. 硬规则 (DO NOT)
+## 5. Hard Rules (DO NOT)
 
-- **不动冻结基线 A** (`config.BASELINE_ONNX`)：所有 delta 的唯一参照, 换了就没法跨轮比、经验也失真。
-- **不用 `err` 跨轮比较**：含训练权重, 调权重后量纲变。只看 `RMSD/AAE/ATE/APL/good%`。
-- **训练 json ≠ 评测 json**：训练 `..._reduce_fast.json`, 评测固定 `config.EVAL_JSON`(`..._tcl.json`)。不混用。
-- **不手改模块级全局/源码常量**：权重、`USE_APL_LOSS/APL_TARGET...` 全走 round.json → env, 一律经 `make_round_config`。
-- **不改 `patience`(50) / `lr` / `dim_*`**(结构项, 实验期冻结)。
-- **新 parent 必须是已完成的轮**(有 verdict.json)：**不要从同批未完成的兄弟派生**(并行的兄弟之间无先后因果)。
-- **一批 ≤6 个**(铺满卡不超卖, 每卡同时只跑一个 round)。
-- **不 commit** ckpt/onnx/saved_model/*.h/runs//ledger.csv/LESSONS.md/*.lock。
-- **不阻塞跑训练**: `nohup ... &` + 轮询 `train.log` / 最终 `verdict.json`。
-- **`$TRAJ_COMPARER`(`torch_version/compare_onnx_hossom.py`) 依赖同目录 `train_polyhead`**：ImportError 先核对 `config.COMPARER`, 别改评测逻辑。
-- 全量前先 `smoke_test_graph.py`。
+- **Do not touch the frozen baseline A** (`config.BASELINE_ONNX`): it is the sole reference for all deltas; changing it breaks cross-round comparison and distorts lessons.
+- **Do not use `err` for cross-round comparison**: it contains training weights, so its dimension changes after tuning weights. Only look at `RMSD/AAE/ATE/APL/good%`.
+- **Training json ≠ evaluation json**: training uses `..._reduce_fast.json`, evaluation is fixed to `config.EVAL_JSON` (`..._tcl.json`). Do not mix them.
+- **Do not hand-edit module-level globals / source constants**: weights, `USE_APL_LOSS/APL_TARGET...` all go through round.json → env, always via `make_round_config`.
+- **Do not change `patience` (50) / `lr` / `dim_*`** (structural items, frozen during the experiment period).
+- **A new parent must be a completed round** (has verdict.json): **do not derive from an unfinished sibling in the same batch** (parallel siblings have no causal ordering between them).
+- **A batch is ≤6** (fill the GPUs without oversubscribing; each GPU runs only one round at a time).
+- **Do not commit** ckpt/onnx/saved_model/*.h/runs//ledger.csv/LESSONS.md/*.lock.
+- **Do not block while training**: `nohup ... &` + poll `train.log` / final `verdict.json`.
+- **`$TRAJ_COMPARER` (`torch_version/compare_onnx_hossom.py`) depends on `train_polyhead` in the same directory**: on ImportError, first check `config.COMPARER`, don't change the evaluation logic.
+- Run `smoke_test_graph.py` before any full run.
 
-## 6. 已知代码气味 (不要"顺手修", 除非任务明确要)
+## 6. Known Code Smells (do not "fix in passing" unless the task explicitly requires it)
 
-- `cnn_gru.calculate_jitter()` 里 `tf.config.experimental_run_functions_eagerly(True)` 是**全局副作用**, 只可离线分析, **绝不能进 train_step 链路**(会把整图翻 eager, 训练暴慢)。
-- `cnn_gru.calculate_slope/speed` 里 `gather(..., [20,21,22,23])` 写死索引, 隐含 `past_length`; 动 `past_length` 会静默错。
-- slope/speed 辅助损失系数(写死 `0.1`)、APL floor 惩罚(写死 `5.0`) 暂未做成 `TRAJ_*` 旋钮, agent 扫不到; 要调先接线(仿 `flags_from_env`)。
-- trainer 用 descriptor 的 `valid_set` 选 best ckpt(不是 fast-valid); 想改 fast-valid 需显式加回 `load_fast_valid_set`。
+- In `cnn_gru.calculate_jitter()`, `tf.config.experimental_run_functions_eagerly(True)` is a **global side effect**, usable only for offline analysis, and **must never enter the train_step path** (it flips the whole graph to eager, making training extremely slow).
+- In `cnn_gru.calculate_slope/speed`, `gather(..., [20,21,22,23])` hard-codes indices that implicitly encode `past_length`; changing `past_length` will silently break it.
+- The slope/speed auxiliary loss coefficients (hard-coded `0.1`) and the APL floor penalty (hard-coded `5.0`) are not yet exposed as `TRAJ_*` knobs and the agent can't see them; wire them up first (mirroring `flags_from_env`) before tuning.
+- The trainer selects the best ckpt using the descriptor's `valid_set` (not fast-valid); to switch to fast-valid you must explicitly re-add `load_fast_valid_set`.
 
-## 7. 目录
+## 7. Directory
 
 ```
 .
 ├── CLAUDE.md  WIRING.md  run_round.sh  run_batch.sh  env_overrides.py
-├── trainer_*.py  cnn_gru_*.py  dataset_*.py        # 训练 (接 env: trainer 1 处 + cnn_gru 2 处; GPU 从 TRAJ_GPU 读)
-├── export_onnx_buffer.py  quantize_onnx.py         # 导出 (读 argv = 本轮 ckpt 目录; 绑 TRAJ_GPU)
+├── trainer_*.py  cnn_gru_*.py  dataset_*.py        # training (reads env: trainer in 1 place + cnn_gru in 2; GPU from TRAJ_GPU)
+├── export_onnx_buffer.py  quantize_onnx.py         # export (reads argv = this round's ckpt dir; binds TRAJ_GPU)
 ├── smoke_test_graph.py
 ├── auto_finetune/
-│   ├── config.py            # 路径/候选数据/阈值/ranges/LESSONS_MD — 唯一真相源
-│   ├── make_round_config.py # 写 round.json (含 --gpu / from / 越界+loose≤strict 校验)
-│   ├── emit_env.py          # round.json -> TRAJ_* export (含 TRAJ_GPU / TRAJ_COMPARER)
-│   ├── analyze.py           # results.csv -> verdict + ledger + lesson + LESSONS (并发写加 flock)
-│   ├── ledger.csv           # 跨轮汇总 (生成)
-│   └── LESSONS.md           # ★ 累积已验证规律 (生成, 自增长, 决策前必读)
+│   ├── config.py            # paths/candidate data/thresholds/ranges/LESSONS_MD — single source of truth
+│   ├── make_round_config.py # writes round.json (incl. --gpu / from / out-of-range + loose≤strict validation)
+│   ├── emit_env.py          # round.json -> TRAJ_* export (incl. TRAJ_GPU / TRAJ_COMPARER)
+│   ├── analyze.py           # results.csv -> verdict + ledger + lesson + LESSONS (concurrent writes use flock)
+│   ├── ledger.csv           # cross-round summary (generated)
+│   └── LESSONS.md           # ★ accumulated verified rules (generated, auto-growing, must-read before deciding)
 ├── torch_version/
-│   ├── compare_onnx_hossom.py   # 评测 ($TRAJ_COMPARER, 依赖同目录 train_polyhead)
+│   ├── compare_onnx_hossom.py   # evaluation ($TRAJ_COMPARER, depends on train_polyhead in the same dir)
 │   └── train_polyhead.py
-├── model/Trajectory_v78_220817_hm/model_hossom.quant.onnx   # 冻结基线 A
-└── runs/<id>/               # 每轮: round.json ckpt/ *.log results.csv verdict.json lesson.md lesson.json
+├── model/Trajectory_v78_220817_hm/model_hossom.quant.onnx   # frozen baseline A
+└── runs/<id>/               # each round: round.json ckpt/ *.log results.csv verdict.json lesson.md lesson.json
 ```
 
-## 8. 并行迭代 loop (你自动跑这个)
+## 8. Parallel Iteration Loop (you run this automatically)
 
-一"批" = 一次最多 6 个单变量实验, 六卡并行。一轮迭代:
+One "batch" = at most 6 single-variable experiments at once, six GPUs in parallel. One iteration:
 
 ```
-1. 读 LESSONS.md + 上一批各 verdict.json + ledger.csv
-2. 挑“新 parent”: 上一批里 verdict=PASS 的; 没有则选净进步最大、且没把另一目标搞坏的那轮
-   (若整批都把某目标搞坏 → 方向走过头, 新 parent 退回上一个好轮, 下批改小步长/换方向)
-3. 按 §4.3 优先级, 基于新 parent 定这批要动的旋钮 (单变量, ≤6 个)
-4. make_round_config --from <新parent> × N   (每个改一个旋钮)
-5. GPUS="0 1 2 3 4 5" run_batch.sh <这批 ids>   (后台 + 轮询)
-6. 跑完回到 1
+1. Read LESSONS.md + each verdict.json from the previous batch + ledger.csv
+2. Pick the "new parent": a round from the previous batch with verdict=PASS; if none, pick the one with the
+   largest net improvement that did not wreck the other goal
+   (if the whole batch wrecked some goal → direction overshot; roll the new parent back to the last good round,
+    and next batch use a smaller step / change direction)
+3. Per the §4.3 priority, based on the new parent, decide which knobs to move this batch (single-variable, ≤6)
+4. make_round_config --from <new parent> × N   (each changes one knob)
+5. GPUS="0 1 2 3 4 5" run_batch.sh <this batch's ids>   (background + poll)
+6. When done, go back to 1
 ```
 
-**终止**: 出现 `verdict=PASS`(curve 改善且 APL 不退), 且后续几批在它基础上再改无净增益(LESSONS.md 出现"抖动级/再调无效")。产出 = 该轮 `runs/<id>/ckpt/model_hossom.quant.onnx`, 报告后停。
+**Termination**: a `verdict=PASS` appears (curve improved and APL did not regress), and subsequent batches building on it yield no net gain (LESSONS.md shows "jitter-level / further tuning ineffective"). Deliverable = that round's `runs/<id>/ckpt/model_hossom.quant.onnx`; report and stop.
 
-**纪律**(自动循环必须守): 新 parent 是已完成轮、不从同批兄弟派生; 每批 ≤6 且单变量; 拿不准 PASS 是否噪声时, 同配置多种子复跑估方差再下结论。
-
-
-
-
+**Discipline** (the automatic loop must observe): the new parent is a completed round, never derived from a same-batch sibling; each batch ≤6 and single-variable; when unsure whether a PASS is noise, re-run the same config with multiple seeds to estimate variance before concluding.

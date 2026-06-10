@@ -1,118 +1,118 @@
-# 轨迹预测 Finetune 编排框架
+# Trajectory Prediction Finetune Orchestration Framework
 
-一套围绕**手写笔轨迹预测模型**的自动化 finetune 编排层。在不重写已有 trainer / 模型的前提下，把"改超参 → 训练 → 导出 → 评测 → 自动归因"串成一条可复现、可并行、经验自增长的流水线。
+An automation layer for finetuning a **stylus trajectory prediction model**. Without rewriting the existing trainer / model, it wires "tweak hyperparameters → train → export → evaluate → auto-attribute" into a single reproducible, parallelizable, self-growing pipeline.
 
-## 这套东西解决什么
+## What this solves
 
-模型 finetune 时常陷入两个**互相冲突**的目标：
+Finetuning this model constantly runs into two **conflicting** goals:
 
-- **保长度**：候选模型的平均预测长度（APL）不能低于基线。
-- **压飞线**：拐角处的轨迹误差（RMSD / 角度误差）不能变差、达标率不能下降。
+- **Preserve length**: the candidate model's Average Prediction Length (APL) must not drop below the baseline.
+- **Suppress fly-off**: trajectory error at corners (RMSD / angular error) must not get worse, and the pass rate must not decline.
 
-压飞线往往会缩短预测、保长度又容易把飞线放出来。人工逐个调权重既慢又难归因。本框架把每一轮实验约束成**单变量改动 + 受控对比 + 自动裁决**，让"改了哪个旋钮 → 指标怎么动 → 该往哪走"被自动记录并积累成可查询的经验库。
+Suppressing fly-off tends to shorten predictions, while preserving length tends to let fly-off back out. Tuning weights one by one by hand is both slow and hard to attribute. This framework constrains every round to a **single-variable change + controlled comparison + automatic verdict**, so that "which knob was turned → how the metrics moved → which way to go next" is recorded automatically and accumulated into a queryable lessons library.
 
-## 流水线（一轮 = 4 步）
+## Pipeline (one round = 4 steps)
 
 ```
-round.json ──emit_env──> TRAJ_* 环境变量 (含指定 GPU)
+round.json ──emit_env──> TRAJ_* environment variables (incl. designated GPU)
      │
-     ├─1─ trainer       训练，按评测描述符选 best ckpt
-     ├─2─ export_onnx   导出量化 onnx
-     ├─3─ comparer      候选 B vs 冻结基线 A → results.csv (逐类别 + OVERALL)
+     ├─1─ trainer       train, select best ckpt per the eval descriptor
+     ├─2─ export_onnx   export quantized onnx
+     ├─3─ comparer      candidate B vs frozen baseline A → results.csv (per-category + OVERALL)
      └─4─ analyze       → verdict.json + ledger.csv + lesson.md + LESSONS.md
 ```
 
-- 所有旋钮只经由 `round.json` 注入环境变量，**不改源码常量**——trainer / model 仅在固定的几处读 env 覆盖默认值，不接也能照常手动跑。
-- 每轮记录 `from`（父轮），靠单变量受控对比做干净归因。
-- 并发写共享文件（ledger / 经验库）已加文件锁。
+- All knobs are injected solely through `round.json` as environment variables — **no source constants are edited**. The trainer / model only read env overrides at a few fixed spots; without them they still run manually as usual.
+- Each round records its `from` (parent round), enabling clean attribution via single-variable controlled comparison.
+- Concurrent writes to shared files (ledger / lessons library) are guarded with file locks.
 
-## 评测指标
+## Evaluation metrics
 
-`results.csv` 每个数据类别一行 + 一行 OVERALL，列为 `A_x / B_x / delta_x`（`delta = B − A`）。跨轮只看与训练权重无关的原始量：
+`results.csv` has one row per data category plus one OVERALL row, with columns `A_x / B_x / delta_x` (`delta = B − A`). Across rounds, only look at the raw quantities that are independent of training weights:
 
-| 指标 | 含义 | 方向 |
+| Metric | Meaning | Direction |
 |---|---|---|
-| `RMSD` | 距离误差 (mm) | ↓ 好 |
-| `AAE(°)` | 角度误差 (度) | ↓ 好 |
-| `ATE` | 时间误差 | ↓ 好 |
-| `APL` | 平均预测长度 (mm) | 不退 |
-| `good%` | 满足精度门的比例 | ↑ 好 |
+| `RMSD` | Distance error (mm) | ↓ better |
+| `AAE(°)` | Angular error (degrees) | ↓ better |
+| `ATE` | Time error | ↓ better |
+| `APL` | Average prediction length (mm) | must not regress |
+| `good%` | Fraction meeting the accuracy gate | ↑ better |
 
-裁决双目标同时满足才算 PASS，由 `analyze.py` 自动判。
+A round PASSes only when both goals are satisfied simultaneously, judged automatically by `analyze.py`.
 
-## 目录结构
+## Directory structure
 
 ```
 .
-├── CLAUDE.md  WIRING.md            # 操作手册 / 一次性接线说明
-├── run_round.sh  run_batch.sh      # 单轮 / 多卡并行批跑
-├── env_overrides.py                # round.json 的 TRAJ_* env → 覆盖 trainer/flag
-├── trainer_*.py  cnn_gru_*.py  dataset_*.py   # 训练（接 env，不被重写）
-├── export_onnx_buffer.py  quantize_onnx.py    # 导出量化 onnx
-├── smoke_test_graph.py             # 改代码前的接线 / 图自检
+├── CLAUDE.md  WIRING.md            # operations manual / one-time wiring guide
+├── run_round.sh  run_batch.sh      # single round / multi-GPU parallel batch
+├── env_overrides.py                # round.json's TRAJ_* env → override trainer/flags
+├── trainer_*.py  cnn_gru_*.py  dataset_*.py   # training (reads env, not rewritten)
+├── export_onnx_buffer.py  quantize_onnx.py    # export quantized onnx
+├── smoke_test_graph.py             # wiring / graph self-check before editing code
 ├── auto_finetune/
-│   ├── config.py                   # 路径 / 候选数据 / 阈值 / 取值区间 —— 唯一真相源
-│   ├── make_round_config.py        # 写 round.json（含越界 / loose≤strict 校验、记 from）
+│   ├── config.py                   # paths / candidate data / thresholds / value ranges — single source of truth
+│   ├── make_round_config.py        # write round.json (with out-of-range / loose≤strict checks, records from)
 │   ├── emit_env.py                 # round.json → TRAJ_* export
 │   ├── analyze.py                  # results.csv → verdict + ledger + lesson + LESSONS
-│   ├── ledger.csv                  # 跨轮汇总（生成）
-│   └── LESSONS.md                  # 累积已验证规律（生成，自增长，决策前必读）
+│   ├── ledger.csv                  # cross-round summary (generated)
+│   └── LESSONS.md                  # accumulated verified rules (generated, self-growing, read before deciding)
 ├── torch_version/
-│   ├── compare_onnx_hossom.py      # 评测器（依赖同目录 train_polyhead）
+│   ├── compare_onnx_hossom.py      # evaluator (depends on train_polyhead in the same dir)
 │   └── train_polyhead.py
-└── runs/<id>/                      # 每轮产物: round.json / ckpt / *.log / results.csv
-                                    #            verdict.json / lesson.md
+└── runs/<id>/                      # per-round artifacts: round.json / ckpt / *.log / results.csv
+                                    #                      verdict.json / lesson.md
 ```
 
-## 快速上手
+## Getting started
 
-### 一次性接线
+### One-time wiring
 
-新装这套编排层时，按 `WIRING.md` 做一遍：放文件、填 `auto_finetune/config.py`（基线路径、评测描述符、数据根、类别匹配等），在 trainer 与 model 各接一处 env 读取。接线自检：
+When installing this orchestration layer fresh, follow `WIRING.md` once: place the files, fill in `auto_finetune/config.py` (baseline path, eval descriptor, data root, category matching, etc.), and add one env-read spot each in the trainer and the model. Wiring self-check:
 
 ```bash
-# round.json 能写能校验、env 能 emit、接线生效
+# round.json can be written and validated, env can be emitted, wiring takes effect
 python -m auto_finetune.make_round_config --id _wiretest --notes test --angle-weight 12
 python -m auto_finetune.emit_env _wiretest
-TRAJ_ANGLE_WEIGHT=12 python smoke_test_graph.py   # 应打印 overridden by env
+TRAJ_ANGLE_WEIGHT=12 python smoke_test_graph.py   # should print "overridden by env"
 rm -rf runs/_wiretest
 ```
 
-### 跑单轮
+### Run a single round
 
 ```bash
 TRAJ_GPU=0 nohup ./run_round.sh <id> > runs/<id>/round.out 2>&1 &
 tail -f runs/<id>/train.log
 ```
 
-### 跑一批（多卡并行）
+### Run a batch (multi-GPU parallel)
 
 ```bash
-# 1. 决策前先读经验与上一批趋势
+# 1. Before deciding, read the lessons and last batch's trend
 cat auto_finetune/LESSONS.md
 column -t -s, auto_finetune/ledger.csv
 
-# 2. 派生这一批（≤6 个，每个只动一个旋钮，全部 --from 上一批已完成的最佳轮）
+# 2. Derive this batch (≤6 rounds, each changing exactly one knob, all --from the best completed round of the last batch)
 python -m auto_finetune.make_round_config --id <id_a> --from <parent> --notes "..." --time-weight 4
 python -m auto_finetune.make_round_config --id <id_b> --from <parent> --notes "..." --angle-weight 15
 
-# 3. 多卡并行（卡满排队、空了顶上、每卡不超卖）
+# 3. Multi-GPU parallel (queues when full, fills in when free, no oversubscription per GPU)
 GPUS="0 1 2 3 4 5" nohup ./run_batch.sh <id_a> <id_b> ... > batch.out 2>&1 &
 
-# 4. 跑完读结论
+# 4. Read the conclusions when done
 cat runs/<id>/lesson.md
 cat auto_finetune/LESSONS.md
 ```
 
-## 核心约定
+## Core conventions
 
-- **改超参唯一入口** = `make_round_config`（只写 `round.json`，不碰源码），自带越界校验、`loose≤strict` 校验、记录父轮。
-- **一轮只动一个旋钮**（单变量）；多变量改动的归因会被自动标记为不可靠。
-- **冻结基线 A 永不改动**——它是所有跨轮 delta 的唯一参照。
-- **训练 json ≠ 评测 json**，不混用。
-- 结构项（学习率、网络维度、patience）实验期冻结；权重 / 损失开关全走 `round.json → env`。
-- 产物（ckpt / onnx / `runs/` / `ledger.csv` / `LESSONS.md` / 锁文件）不入库。
+- **The only entry point for changing hyperparameters** = `make_round_config` (writes `round.json` only, never touches source), with built-in out-of-range checks, `loose≤strict` checks, and parent-round recording.
+- **One knob per round** (single variable); attribution for multi-variable changes is automatically flagged as unreliable.
+- **The frozen baseline A is never changed** — it is the sole reference for all cross-round deltas.
+- **Training json ≠ eval json**, never mixed.
+- Structural items (learning rate, network dimensions, patience) are frozen during experimentation; weights / loss switches all go through `round.json → env`.
+- Artifacts (ckpt / onnx / `runs/` / `ledger.csv` / `LESSONS.md` / lock files) are not committed.
 
-## 经验库自增长
+## Self-growing lessons library
 
-每轮 `analyze.py` 会把"改了什么 → 指标怎么动 → 候选规律 → 下一步建议"写进该轮 `lesson.md`，并追加到全局 `auto_finetune/LESSONS.md`。下一轮决策前先读 `LESSONS.md`：已被多轮单变量实测一致验证的规律，优先级高于初始的方向性先验。如此每一批迭代都在前一批的实测结论上爬山。
+Each round, `analyze.py` writes "what changed → how the metrics moved → candidate rule → next-step suggestion" into that round's `lesson.md`, and appends it to the global `auto_finetune/LESSONS.md`. Read `LESSONS.md` before deciding the next round: rules that have been consistently verified across multiple single-variable runs take priority over the initial directional priors. This way every batch climbs on the measured conclusions of the previous one.
