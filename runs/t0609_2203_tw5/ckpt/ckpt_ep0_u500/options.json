@@ -1,0 +1,1 @@
+{"dim_feature": 2, "dim_rnns": [128, 64], "dropout_rate": 0.0, "history_errs": [23.67413330078125]}

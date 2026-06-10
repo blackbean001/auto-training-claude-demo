@@ -1,0 +1,81 @@
+{
+  "round_id": "t0609_1728",
+  "verdict": "FAIL",
+  "apl_ok": true,
+  "curves_ok": false,
+  "overall": {
+    "A_APL": 0.974981,
+    "B_APL": 1.526811,
+    "apl_floor": 0.9262319499999999,
+    "B_RMSD": 1.048567,
+    "delta_RMSD": 0.064938,
+    "B_good%": 46.231268,
+    "delta_good%": 22.284059,
+    "delta_APL": 0.551831
+  },
+  "curves": [
+    {
+      "file": "fast_big_curves",
+      "ok": true,
+      "B_RMSD": 1.860595,
+      "delta_RMSD": -0.149689,
+      "B_APL": 2.589394,
+      "delta_APL": 1.588027,
+      "delta_good%": 1.106598
+    },
+    {
+      "file": "fast_small_curves",
+      "ok": false,
+      "B_RMSD": 1.288542,
+      "delta_RMSD": 0.276191,
+      "B_APL": 2.407496,
+      "delta_APL": 0.897899,
+      "delta_good%": -2.492829
+    },
+    {
+      "file": "normal_big_curves",
+      "ok": true,
+      "B_RMSD": 0.765264,
+      "delta_RMSD": -0.26625,
+      "B_APL": 3.058694,
+      "delta_APL": 0.805716,
+      "delta_good%": 7.129014
+    },
+    {
+      "file": "normal_small_curves",
+      "ok": false,
+      "B_RMSD": 0.595069,
+      "delta_RMSD": 0.041553,
+      "B_APL": 2.096698,
+      "delta_APL": 0.809465,
+      "delta_good%": 2.0277
+    },
+    {
+      "file": "slow_big_curves",
+      "ok": true,
+      "B_RMSD": 0.351841,
+      "delta_RMSD": -0.07899,
+      "B_APL": 1.528666,
+      "delta_APL": 0.438474,
+      "delta_good%": 33.093275
+    },
+    {
+      "file": "slow_small_curves",
+      "ok": true,
+      "B_RMSD": 0.212213,
+      "delta_RMSD": -0.088323,
+      "B_APL": 0.639806,
+      "delta_APL": 0.136203,
+      "delta_good%": 36.951252
+    }
+  ],
+  "straight_regressed": [
+    {
+      "file": "fast_straight_line_ending_wiht_pen_lifting",
+      "delta_RMSD": 0.960836
+    }
+  ],
+  "suggestions": [
+    "curve 类未改善/变差. 首选 angle_weight += 5; 或加大 cnn_gru slope/speed 辅助系数(0.1); 或收紧 --dist-tol-loose。"
+  ]
+}

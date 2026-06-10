@@ -1,0 +1,32 @@
+{
+  "round_id": "t0609_1728",
+  "created": "2026-06-09T17:28:47",
+  "notes": "首通诊断",
+  "train_data_json": "data/data_Trajectory_v78_260525_jason_tcl_reduce_fast.json",
+  "weights": {
+    "distance_weight": 10.0,
+    "angle_weight": 10.0,
+    "time_weight": 4.0,
+    "fit_weight": 10.0,
+    "distance_tolerance_loose": 1.5,
+    "distance_tolerance_strict": 3.0,
+    "hardness": 99.5,
+    "patience": 50
+  },
+  "lr": [
+    0.0001,
+    0.0002,
+    4e-05,
+    8e-06
+  ],
+  "flags": {
+    "TUNE_TIME_ONLY": false,
+    "TUNE_POLY_ONLY": false,
+    "USE_APL_LOSS": false,
+    "APL_TARGET": 0.8,
+    "USE_TIME_CEIL": false,
+    "TIME_CEIL": 0.5
+  },
+  "from": null,
+  "gpu": "0"
+}

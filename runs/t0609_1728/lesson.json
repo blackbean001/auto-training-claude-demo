@@ -1,0 +1,14 @@
+{
+  "round_id": "t0609_1728",
+  "from": null,
+  "verdict": "FAIL",
+  "notes": "首通诊断",
+  "changed": [],
+  "moves": {},
+  "derived": [
+    "首轮 / 无 parent 对比。仅相对冻结基线 A 评估 (见 verdict)。"
+  ],
+  "next_suggestions": [
+    "curve 类未改善/变差. 首选 angle_weight += 5; 或加大 cnn_gru slope/speed 辅助系数(0.1); 或收紧 --dist-tol-loose。"
+  ]
+}

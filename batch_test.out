@@ -1,0 +1,8 @@
+nohup: ignoring input
+[batch] 2 GPUs (0 1), 2 rounds: 0608_tw4 0608_aw15
+[batch] -> GPU 0 : 0608_tw4   (17:01:03)
+[batch] -> GPU 1 : 0608_aw15   (17:01:03)
+[batch] all dispatched, waiting for the last ones...
+[batch] <- GPU 0 : 0608_tw4 done (rc=0)
+[batch] <- GPU 1 : 0608_aw15 done (rc=1)
+[batch] DONE. 看各 runs/<id>/verdict.json 与 lesson.md; 跨轮汇总 ledger.csv / LESSONS.md
