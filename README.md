@@ -58,7 +58,7 @@ A round PASSes only when both goals are satisfied simultaneously, judged automat
 │   ├── ledger.csv                  # cross-round summary (generated)
 │   └── LESSONS.md                  # accumulated verified rules (generated, self-growing, read before deciding)
 ├── torch_version/
-│   ├── compare_onnx_hossom.py      # evaluator (depends on train_polyhead in the same dir)
+│   ├── compare_onnx.py      # evaluator (depends on train_polyhead in the same dir)
 │   └── train_polyhead.py
 └── runs/<id>/                      # per-round artifacts: round.json / ckpt / *.log / results.csv
                                     #                      verdict.json / lesson.md
