@@ -7,7 +7,8 @@ Created on Wed Apr  6 12:58:00 2022
 
 import os
 #os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-os.environ.get("TRAJ_GPU", "1")
+os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("TRAJ_GPU", "1")
+
 
 import logging
 import math
